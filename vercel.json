@@ -1,0 +1,8 @@
+{
+  "git": {
+    "deploymentEnabled": {
+      "data": false,
+      "gh-pages": false
+    }
+  }
+}

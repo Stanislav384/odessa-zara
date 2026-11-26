@@ -898,21 +898,19 @@ function mergeRemote(rem, hist, hc){
 const store = {put(){}, log(){}, clearLog(){}};
 function setSync(t){ document.getElementById('sync').textContent = t; }
 
-const GH = (() => {
-  const m = location.hostname.match(/^([a-z0-9-]+)\.github\.io$/i);
-  if (!m) return null;
-  return {owner: m[1], repo: location.pathname.split('/').filter(Boolean)[0] || (m[1] + '.github.io'), path: 'data.json'};
-})();
+/* общие данные лежат в репозитории GitHub (ветка data, файл data.json); сам сайт может быть где угодно — Vercel, GitHub Pages */
+const IN_ARTIFACT = !!(window.claude && window.claude.use) || /claude/i.test(location.hostname);
+const GH = (/^https?:$/.test(location.protocol) && !IN_ARTIFACT) ? {id: 1473656849, branch: 'data', path: 'data.json'} : null;
 
 if (GH) {
   mode = 'github';
-  const api = 'https://api.github.com/repos/' + GH.owner + '/' + GH.repo;
+  const api = 'https://api.github.com/repositories/' + GH.id;
   let token = LS.get('gh_token', ''), sha = null, etag = null, dirty = new Set(), newLog = [], saving = false, timer = null;
   const hdr = extra => Object.assign({'Accept':'application/vnd.github+json'}, token ? {'Authorization':'Bearer ' + token} : {}, extra || {});
   const b64dec = s => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\s/g, '')), c => c.charCodeAt(0)));
   const b64enc = s => { const b = new TextEncoder().encode(s); let o = ''; for (let i = 0; i < b.length; i += 0x8000) o += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(o); };
   async function pull(){
-    const r = await fetch(api + '/contents/' + GH.path + '?t=' + (token ? Date.now() : ''), {headers: hdr(etag ? {'If-None-Match': etag} : {}), cache:'no-store'});
+    const r = await fetch(api + '/contents/' + GH.path + '?ref=' + GH.branch + (token ? '&t=' + Date.now() : ''), {headers: hdr(etag ? {'If-None-Match': etag} : {}), cache:'no-store'});
     if (r.status === 304) return false;
     if (r.status === 404) { sha = null; if (canEdit) { for (const id in R) dirty.add(id); newLog = H.slice(); } return false; }
     if (!r.ok) throw new Error('get ' + r.status);
@@ -939,7 +937,7 @@ if (GH) {
       for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt) { etag = null; await pull(); }
         const body = {R, H: H.slice(0, 1500), hc: HC};
-        const r = await fetch(api + '/contents/' + GH.path, {method:'PUT', headers: hdr({'Content-Type':'application/json'}), body: JSON.stringify({message: 'Зарядки: изменения ' + new Date().toLocaleString('uk-UA'), content: b64enc(JSON.stringify(body)), sha: sha || undefined})});
+        const r = await fetch(api + '/contents/' + GH.path, {method:'PUT', headers: hdr({'Content-Type':'application/json'}), body: JSON.stringify({message: 'Зарядки: изменения ' + new Date().toLocaleString('uk-UA'), content: b64enc(JSON.stringify(body)), branch: GH.branch, sha: sha || undefined})});
         if (r.ok) { const j = await r.json(); sha = j.content.sha; etag = null; dirty.clear(); newLog = []; setSync('Сохранено для всех ✓ · вы администратор'); break; }
         if (r.status === 401 || r.status === 403) { setSync('Ключ доступа не подходит — изменения сохранены только на этом устройстве'); break; }
         if (r.status !== 409 && r.status !== 422) { setSync('Не удалось сохранить (' + r.status + '), повторю позже'); break; }
@@ -1336,6 +1334,7 @@ let tt; function toast(m){ const t = document.getElementById('toast'); t.textCon
 
 menuState();
 build();
+
 
 
 }
