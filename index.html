@@ -763,7 +763,8 @@ header{flex:none;background:#14232e;color:#fff;padding:calc(8px + env(safe-area-
 .pin.done{box-shadow:0 0 0 3px rgba(123,47,247,.35),0 0 14px 5px rgba(150,80,255,.85);animation:glow 2.4s ease-in-out infinite}
 @keyframes glow{50%{box-shadow:0 0 0 3px rgba(123,47,247,.2),0 0 22px 9px rgba(150,80,255,.6)}}
 @media (prefers-reduced-motion:reduce){.pin.done{animation:none}}
-body.ro .fab .add{display:none}
+body.ro .fab .add,body.ro .adm{display:none}
+#clearHist{color:#b3261e}
 .ttl{font-weight:700;margin:2px 0 4px}
 .stl{font-weight:600}.stl.ok{color:#16723e}.stl.bad{color:#b3261e}
 .rnote{background:#f4f7f9;border-radius:9px;padding:8px;margin-bottom:8px;white-space:pre-wrap;font-size:14px}
@@ -808,7 +809,7 @@ body.ro .fab .add{display:none}
   <div id="list"></div>
 </div>
 <div id="hist">
-  <div class="sh"><b id="ht">История</b><button id="closeHist">Закрыть</button><input id="hq" type="search" placeholder="Поиск по зарядке или тексту"></div>
+  <div class="sh"><b id="ht">История</b><button id="clearHist" class="adm">Очистить</button><button id="closeHist">Закрыть</button><input id="hq" type="search" placeholder="Поиск по зарядке или тексту"></div>
   <div id="hlist"></div>
 </div>
 <div id="loginBox"><div class="lb">
@@ -837,7 +838,9 @@ const KEY = 'odessa_ev_v3', DAILY = 5;
 let R = {}, H = [];
 const LS = {get(k, d){ try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch(e) { return d; } }, set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e) {} }};
 R = LS.get(KEY, {}) || {}; H = LS.get(KEY + '_h', []) || [];
-function saveLocal(){ LS.set(KEY, R); LS.set(KEY + '_h', H.slice(0, 1500)); }
+let HC = LS.get(KEY + '_hc', 0) || 0; // когда историю очищали
+function saveLocal(){ LS.set(KEY, R); LS.set(KEY + '_h', H.slice(0, 1500)); LS.set(KEY + '_hc', HC); }
+function applyClear(hc){ if ((hc || 0) > HC) { HC = hc; H = H.filter(e => e.t > HC); } }
 
 const today = () => { const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
 const fmt = iso => { const [y,m,d] = iso.split('-'); return d+'.'+m+'.'+y; };
@@ -878,7 +881,8 @@ function log(id, a, v){
 /* примечание пишем в историю один раз, когда человек перестал печатать */
 function noteLog(id){ clearTimeout(noteTimers[id]); noteTimers[id] = setTimeout(() => log(id, 'note', (R[id] && R[id].note) || ''), 4000); }
 
-function mergeRemote(rem, hist){
+function mergeRemote(rem, hist, hc){
+  applyClear(hc); if (hist) hist = hist.filter(e => e.t > HC);
   const changed = [];
   for (const id in rem) { const v = rem[id], l = R[id]; if (!l || (v.t || 0) > (l.t || 0)) { R[id] = v; changed.push(id); } }
   if (hist && hist.length) {
@@ -891,7 +895,7 @@ function mergeRemote(rem, hist){
 }
 
 /* ---------- хранилище: GitHub (сайт на GitHub Pages), аккаунт Claude (артефакт) или только это устройство ---------- */
-const store = {put(){}, log(){}};
+const store = {put(){}, log(){}, clearLog(){}};
 function setSync(t){ document.getElementById('sync').textContent = t; }
 
 const GH = (() => {
@@ -914,13 +918,15 @@ if (GH) {
     if (!r.ok) throw new Error('get ' + r.status);
     etag = r.headers.get('ETag');
     const j = await r.json(); sha = j.sha;
-    const d = JSON.parse(b64dec(j.content || '') || '{}');
-    const remR = d.R || {}, remH = d.H || [];
+    let d = {}; try { d = JSON.parse(b64dec(j.content || '')) || {}; } catch(e) { d = {}; }
+    applyClear(d.hc);
+    const remR = d.R || {}, remH = (d.H || []).filter(e => e.t > HC);
     if (canEdit) { // свои правки, которых ещё нет в общем файле, отправим
       for (const id in R) if (!remR[id] || (R[id].t || 0) > (remR[id].t || 0)) dirty.add(id);
-      const rk = new Set(remH.map(e => e.k)); for (const e of H) if (!rk.has(e.k)) newLog.push(e);
+      const rk = new Set(remH.map(e => e.k)); for (const e of H) if (!rk.has(e.k) && e.t > HC) newLog.push(e);
+      if ((d.hc || 0) < HC) dirty.add('__hc');
     }
-    const ch = mergeRemote(remR, remH);
+    const ch = mergeRemote(remR, remH, d.hc);
     if (dirty.size || newLog.length) { clearTimeout(timer); timer = setTimeout(push, 2500); }
     if (ch.length) refresh(ch);
     if (histSheet.classList.contains('open')) renderHistory();
@@ -932,7 +938,7 @@ if (GH) {
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt) { etag = null; await pull(); }
-        const body = {R, H: H.slice(0, 1500)};
+        const body = {R, H: H.slice(0, 1500), hc: HC};
         const r = await fetch(api + '/contents/' + GH.path, {method:'PUT', headers: hdr({'Content-Type':'application/json'}), body: JSON.stringify({message: 'Зарядки: изменения ' + new Date().toLocaleString('uk-UA'), content: b64enc(JSON.stringify(body)), sha: sha || undefined})});
         if (r.ok) { const j = await r.json(); sha = j.content.sha; etag = null; dirty.clear(); newLog = []; setSync('Сохранено для всех ✓ · вы администратор'); break; }
         if (r.status === 401 || r.status === 403) { setSync('Ключ доступа не подходит — изменения сохранены только на этом устройстве'); break; }
@@ -944,6 +950,7 @@ if (GH) {
   }
   store.put = id => { dirty.add(id); clearTimeout(timer); timer = setTimeout(push, 2500); };
   store.log = e => { newLog.push(e); clearTimeout(timer); timer = setTimeout(push, 2500); };
+  store.clearLog = () => { dirty.add('__hc'); clearTimeout(timer); timer = setTimeout(push, 500); };
   async function checkToken(){
     if (!token) { setAccess(false); setSync('Режим просмотра. Изменять может только администратор.'); return; }
     try {
@@ -977,6 +984,7 @@ if (GH) {
       const timers = {}, chains = {};
       store.put = id => { clearTimeout(timers[id]); timers[id] = setTimeout(() => { const body = JSON.parse(JSON.stringify(R[id])); chains[id] = (chains[id] || Promise.resolve()).then(() => st.doc(id).set(body)).catch(() => setSync('Не удалось сохранить — проверьте интернет')); }, 700); };
       store.log = e => { lg.doc(e.k).set(e).catch(() => {}); };
+      store.clearLog = async () => { const s = await lg.get(); for (const d of s.docs) await lg.doc(d.id).delete().catch(() => {}); };
       let first = true;
       st.onSnapshot(snap => {
         const rem = {}; for (const d of snap.docs) { const v = d.data(); if (v) rem[d.id] = JSON.parse(JSON.stringify(v)); }
@@ -1275,6 +1283,14 @@ function renderHistory(){
 document.getElementById('histBtn').onclick = () => { sheet.classList.remove('open'); histSheet.classList.add('open'); renderHistory(); };
 document.getElementById('closeHist').onclick = () => histSheet.classList.remove('open');
 document.getElementById('hq').oninput = renderHistory;
+/* очистить историю (только администратор) */
+const clearBtn = document.getElementById('clearHist'); let clearArmed = false;
+clearBtn.onclick = () => {
+  if (!canEdit) return;
+  if (!clearArmed) { clearArmed = true; clearBtn.textContent = 'Точно очистить?'; setTimeout(() => { clearArmed = false; clearBtn.textContent = 'Очистить'; }, 3000); return; }
+  clearArmed = false; clearBtn.textContent = 'Очистить';
+  HC = Date.now(); H = []; saveLocal(); store.clearLog(); renderHistory(); toast('История очищена');
+};
 
 /* ---------- добавить свою зарядку (только администратор) ---------- */
 const addBtn = document.getElementById('addBtn'), hint = document.getElementById('hint');
@@ -1320,6 +1336,7 @@ let tt; function toast(m){ const t = document.getElementById('toast'); t.textCon
 
 menuState();
 build();
+
 
 }
 </script>
